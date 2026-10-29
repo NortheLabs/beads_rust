@@ -84,6 +84,10 @@ pub(crate) fn github_raw_main_url(path: &str) -> String {
 /// The data mutation has already succeeded by the time this is called. The
 /// safest remaining action is to make the sync debt visible on stderr and leave
 /// the operator with an explicit `sync --flush-only` recovery path.
+///
+/// The warning is printed in every output mode, `--quiet` included: quiet
+/// means "no output except errors", and an export that left the tracked JSONL
+/// stale is an error-class condition even though the command exits 0.
 pub fn report_auto_flush_failure(
     ctx: &OutputContext,
     beads_dir: &Path,
@@ -96,10 +100,6 @@ pub fn report_auto_flush_failure(
         error = %error,
         "Mutation succeeded but auto-flush failed"
     );
-
-    if ctx.is_quiet() {
-        return;
-    }
 
     let message = "Mutation succeeded, but automatic JSONL export failed. \
                    Fix the export problem, run `br sync --flush-only`, then commit \

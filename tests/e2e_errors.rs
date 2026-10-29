@@ -1000,6 +1000,53 @@ fn e2e_auto_flush_failure_is_visible_in_json_mode() {
 }
 
 #[test]
+fn e2e_auto_flush_failure_is_visible_in_quiet_mode() {
+    let _log = common::test_log("e2e_auto_flush_failure_is_visible_in_quiet_mode");
+    let workspace = BrWorkspace::new();
+
+    let init = run_br(&workspace, ["init"], "init");
+    assert!(init.status.success(), "init failed: {}", init.stderr);
+
+    let create = run_br(&workspace, ["create", "Quiet flush debt"], "create");
+    assert!(create.status.success(), "create failed: {}", create.stderr);
+    let issue_id = parse_created_id(&create.stdout);
+
+    let bad_jsonl = workspace
+        .root
+        .join(".beads")
+        .join("beads.db")
+        .join("issues.jsonl");
+    let bad_jsonl = bad_jsonl.to_string_lossy().to_string();
+
+    let update = run_br_with_env(
+        &workspace,
+        [
+            "-q",
+            "--no-auto-import",
+            "update",
+            &issue_id,
+            "--priority",
+            "1",
+        ],
+        [("BEADS_JSONL", bad_jsonl.as_str())],
+        "update_quiet_bad_auto_flush_jsonl",
+    );
+    assert!(
+        update.status.success(),
+        "mutation should still succeed while surfacing auto-flush debt: {}",
+        update.stderr
+    );
+    assert!(
+        update
+            .stderr
+            .contains("Mutation succeeded, but automatic JSONL export failed")
+            && update.stderr.contains("br sync --flush-only"),
+        "--quiet must not hide auto-flush debt: {}",
+        update.stderr
+    );
+}
+
+#[test]
 fn e2e_sync_flush_checks_conflict_markers_before_noop_short_circuit() {
     // Regression: `br sync --flush-only` can return early when the DB has
     // nothing dirty. That early return must not hide unresolved JSONL merge
