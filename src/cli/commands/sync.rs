@@ -2725,6 +2725,7 @@ fn execute_flush(
         history: history_config,
         max_parallel_workers: args.export_parallelism.unwrap_or(0),
         expected_staged_output: None,
+        lock_timeout_ms: None,
     };
 
     // Execute export
@@ -4588,6 +4589,7 @@ fn reconcile_pending_sync_merge_artifacts(
                     issue_count: receipt.jsonl_after_issue_count,
                     issue_hashes: receipt.jsonl_after_issue_hashes.clone(),
                 }),
+                lock_timeout_ms: None,
             };
             let expected_source = current_source.map_or(
                 ExpectedJsonlSourceRef::Missing,

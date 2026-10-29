@@ -3415,6 +3415,10 @@ pub struct ExportConfig {
     /// synced, captured, and structurally validated, but before any namespace
     /// operation can replace the live JSONL.
     pub expected_staged_output: Option<ExpectedStagedExport>,
+    /// How long, in milliseconds, an exporter that acquires its own
+    /// JSONL-family write authority waits for it. `None` waits the default
+    /// write-lock timeout. Ignored when the caller hands in a held authority.
+    pub lock_timeout_ms: Option<u64>,
 }
 
 /// Export error handling policy.
@@ -11473,7 +11477,7 @@ fn export_to_jsonl_with_policy_expected_authority(
     } else {
         Some(blocking_jsonl_family_write_lock_with_timeout(
             output_path,
-            None,
+            config.lock_timeout_ms,
         )?)
     };
     let jsonl_authority = provided_jsonl_authority
@@ -14064,7 +14068,8 @@ fn try_incremental_auto_flush(
     let owned_jsonl_authority = match provided_jsonl_authority {
         Some(_) => None,
         None => Some(blocking_jsonl_family_write_lock_with_timeout(
-            jsonl_path, None,
+            jsonl_path,
+            export_config.lock_timeout_ms,
         )?),
     };
     let jsonl_authority = provided_jsonl_authority
@@ -14204,6 +14209,7 @@ pub fn auto_flush(
         retention_days,
         history,
         None,
+        None,
     )
 }
 
@@ -14219,11 +14225,15 @@ pub fn auto_flush(
 /// `AUTO_FLUSH_FAILED` with the mutation still exiting 0 and the tracked JSONL
 /// left stale (GitHub #487).
 ///
-/// Passing `None` is the ordinary case and acquires the authority internally.
+/// Passing `None` is the ordinary case and acquires the authority internally,
+/// waiting up to `lock_timeout_ms` for it (`None` waits the default write-lock
+/// timeout), so a command's `--lock-timeout` governs its flush as it governs
+/// its database lock.
 ///
 /// # Errors
 ///
 /// Returns an error if the export fails.
+#[allow(clippy::too_many_arguments)]
 pub fn auto_flush_with_authority(
     storage: &mut SqliteStorage,
     beads_dir: &Path,
@@ -14232,6 +14242,7 @@ pub fn auto_flush_with_authority(
     retention_days: Option<u64>,
     history: HistoryConfig,
     provided_jsonl_authority: Option<&JsonlFamilyWriteLock>,
+    lock_timeout_ms: Option<u64>,
 ) -> Result<AutoFlushResult> {
     // This guard is intentionally independent of CLI/MCP startup policy and
     // precedes the dirty/no-op probe. A clean database with a durable pending
@@ -14269,6 +14280,7 @@ pub fn auto_flush_with_authority(
         retention_days,
         export_as_of: Some(Utc::now()),
         history,
+        lock_timeout_ms,
         ..Default::default()
     };
 
@@ -14346,11 +14358,12 @@ pub fn auto_flush_with_authority(
             jsonl_path,
             authority,
         )?,
-        None => finalize_export(
+        None => finalize_export_under_authority(
             storage,
             &export_result,
             Some(&export_result.issue_hashes),
             jsonl_path,
+            &blocking_jsonl_family_write_lock_with_timeout(jsonl_path, lock_timeout_ms)?,
         )?,
     }
 
@@ -30252,6 +30265,70 @@ mod tests {
         );
         assert!(storage.get_dirty_issue_ids().unwrap().is_empty());
         assert_eq!(fs::read_to_string(&output_path).unwrap(), before);
+    }
+
+    /// GitHub #487: a flush that acquires its own JSONL-family authority waits
+    /// the caller's `--lock-timeout`, on the full-export and incremental paths.
+    #[test]
+    fn test_auto_flush_waits_the_callers_lock_timeout_for_jsonl_authority() {
+        let mut storage = SqliteStorage::open_memory().unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let beads_dir = temp_dir.path().join(".beads");
+        let jsonl_path = beads_dir.join("issues.jsonl");
+        fs::create_dir_all(&beads_dir).unwrap();
+        storage
+            .create_issue(&make_test_issue("bd-held", "Held authority"), "test")
+            .unwrap();
+
+        let flush_against_held_authority = |storage: &mut SqliteStorage| {
+            let _held =
+                blocking_jsonl_family_write_lock_with_timeout(&jsonl_path, Some(100)).unwrap();
+            auto_flush_with_authority(
+                storage,
+                &beads_dir,
+                &jsonl_path,
+                false,
+                None,
+                HistoryConfig::default(),
+                None,
+                Some(150),
+            )
+            .unwrap_err()
+        };
+
+        let full_export = flush_against_held_authority(&mut storage);
+        assert!(
+            matches!(
+                full_export,
+                BeadsError::WriteLockTimeout {
+                    timeout_ms: 150,
+                    ..
+                }
+            ),
+            "{full_export:?}"
+        );
+
+        auto_flush(
+            &mut storage,
+            &beads_dir,
+            &jsonl_path,
+            false,
+            None,
+            HistoryConfig::default(),
+        )
+        .unwrap();
+        retitle(&mut storage, "bd-held", "Changed under a held authority");
+        let incremental = flush_against_held_authority(&mut storage);
+        assert!(
+            matches!(
+                incremental,
+                BeadsError::WriteLockTimeout {
+                    timeout_ms: 150,
+                    ..
+                }
+            ),
+            "{incremental:?}"
+        );
     }
 
     #[test]

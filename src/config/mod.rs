@@ -5122,6 +5122,7 @@ impl OpenStorageResult {
         let Self {
             storage,
             jsonl_write_authority,
+            resolved_lock_timeout,
             ..
         } = self;
         crate::sync::auto_flush_with_authority(
@@ -5132,6 +5133,7 @@ impl OpenStorageResult {
             retention_days,
             history,
             jsonl_write_authority.as_deref(),
+            *resolved_lock_timeout,
         )
     }
 
@@ -9963,6 +9965,7 @@ routing:
             None,
             crate::sync::history::HistoryConfig::default(),
             context.jsonl_write_authority.as_deref(),
+            None,
         )
         .unwrap();
         let omitted = context
@@ -10111,6 +10114,7 @@ routing:
                 None,
                 crate::sync::history::HistoryConfig::default(),
                 context.jsonl_write_authority.as_deref(),
+                None,
             )
             .unwrap();
             assert!(result.flushed);
